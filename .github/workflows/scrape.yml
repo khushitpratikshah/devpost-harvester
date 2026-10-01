@@ -11,7 +11,7 @@ on:
         default: '300'
       hackathon_limit:
         description: 'New hackathon galleries to scan this run'
-        default: '25'
+        default: '60'
 
 # Never let two runs hit Devpost and the DB at the same time.
 concurrency:
