@@ -111,6 +111,7 @@ def step2_scrape_galleries(limit=6, max_pages=30):
         print(f"Scanning gallery for: {h_title}")
         base_gallery = f"{h_url.rstrip('/')}/project-gallery"
         page = 1
+        winners_found = 0
         
         while page <= max_pages:
             gallery_url = f"{base_gallery}?page={page}"
@@ -122,7 +123,6 @@ def step2_scrape_galleries(limit=6, max_pages=30):
                 soup = BeautifulSoup(res.text, 'html.parser')
                 cards = soup.select('div.gallery-item') or soup.select('a.link-to-software')
                 
-                # Reached the end of the gallery
                 if not cards:
                     break
                     
@@ -136,6 +136,9 @@ def step2_scrape_galleries(limit=6, max_pages=30):
                     
                     winner_tag = card.find(class_=lambda x: x and ('winner' in x.lower() or 'entry-badge' in x.lower()))
                     is_winner = 1 if winner_tag else 0
+                    
+                    if is_winner == 1:
+                        winners_found += 1
                     
                     tagline_elem = card.find(class_='tagline')
                     tagline = tagline_elem.get_text(strip=True) if tagline_elem else ""
@@ -153,7 +156,16 @@ def step2_scrape_galleries(limit=6, max_pages=30):
                 print(f"Error scanning gallery {gallery_url}: {e}")
                 break
                 
-        client.execute("UPDATE hackathons SET scraped_gallery = 1 WHERE id = ?", [h_id])
+        # INTELLIGENT WINNER CHECK
+        if winners_found > 0:
+            print(f"  -> Success: Found {winners_found} winners. Marking as complete.")
+            client.execute("UPDATE hackathons SET scraped_gallery = 1 WHERE id = ?", [h_id])
+        else:
+            print(f"  -> No winners found for '{h_title}'. Likely pending judging.")
+            # Delete non-winning projects to avoid database bloat
+            client.execute("DELETE FROM projects WHERE hackathon_id = ?", [h_id])
+            # Set to 2 (Pending Winners) so we skip it in future automated runs
+            client.execute("UPDATE hackathons SET scraped_gallery = 2 WHERE id = ?", [h_id])
 
 def step3_scrape_project_details(batch_size=80):
     print(f"\n--- Phase 3: Deep Scraping Winners Only (Limit: {batch_size}) ---")
