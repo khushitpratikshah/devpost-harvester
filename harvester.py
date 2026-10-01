@@ -47,11 +47,11 @@ def env_float(name, default):
 
 
 DIRECTORY_PAGES = env_int("DIRECTORY_PAGES", 2)       # newest pages, re-read every run
-BACKFILL_PAGES = env_int("BACKFILL_PAGES", 50)        # older pages per run, resumes from saved cursor
-HACKATHON_LIMIT = env_int("HACKATHON_LIMIT", 60)       # new galleries per run
+BACKFILL_PAGES = env_int("BACKFILL_PAGES", 250)        # older pages per run, resumes from saved cursor
+HACKATHON_LIMIT = env_int("HACKATHON_LIMIT", 250)       # new galleries per run
 RECHECK_LIMIT = env_int("RECHECK_LIMIT", 10)           # pending galleries re-checked per run
 RECHECK_DAYS = env_float("RECHECK_DAYS", 3)
-MAX_GALLERY_PAGES = env_int("MAX_GALLERY_PAGES", 30)
+MAX_GALLERY_PAGES = env_int("MAX_GALLERY_PAGES", 45)
 PROJECT_BATCH = env_int("PROJECT_BATCH", 300)          # winner detail pages per run
 WORKERS = env_int("WORKERS", 6)
 REQS_PER_SEC = env_float("REQS_PER_SEC", 3.0)          # shared across all workers
