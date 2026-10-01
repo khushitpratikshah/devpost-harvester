@@ -101,7 +101,7 @@ def step1_discover_hackathons(max_pages=2):
             print(f"Error on directory page {page}: {e}")
             break
 
-def step2_scrape_galleries(limit=6):
+def step2_scrape_galleries(limit=6, max_pages=30):
     print("\n--- Phase 2: Indexing Hackathon Galleries ---")
     scraper = get_scraper()
     rs = client.execute("SELECT id, url, title FROM hackathons WHERE scraped_gallery = 0 LIMIT ?", [limit])
@@ -112,7 +112,7 @@ def step2_scrape_galleries(limit=6):
         base_gallery = f"{h_url.rstrip('/')}/project-gallery"
         page = 1
         
-        while True:
+        while page <= max_pages:
             gallery_url = f"{base_gallery}?page={page}"
             try:
                 res = scraper.get(gallery_url, timeout=12)
@@ -121,6 +121,8 @@ def step2_scrape_galleries(limit=6):
                 
                 soup = BeautifulSoup(res.text, 'html.parser')
                 cards = soup.select('div.gallery-item') or soup.select('a.link-to-software')
+                
+                # Reached the end of the gallery
                 if not cards:
                     break
                     
@@ -143,7 +145,8 @@ def step2_scrape_galleries(limit=6):
                         "INSERT OR IGNORE INTO projects (hackathon_id, slug, title, url, is_winner, tagline) VALUES (?, ?, ?, ?, ?, ?)",
                         [h_id, p_slug, title, p_url, is_winner, tagline]
                     )
-                    
+                
+                print(f"  -> Processed gallery page {page}")
                 page += 1
                 time.sleep(random.uniform(1.5, 3.0))
             except Exception as e:
@@ -169,7 +172,7 @@ def step3_scrape_project_details(batch_size=80):
         try:
             res = scraper.get(p_url, timeout=12)
             if res.status_code in [403, 429]:
-                print(f"Status {res.status_code} hit. Backing off.")
+                print(f"  -> Status {res.status_code} hit. Backing off.")
                 break
             
             if res.status_code == 404:
@@ -203,6 +206,6 @@ def step3_scrape_project_details(batch_size=80):
 if __name__ == "__main__":
     setup_database()
     step1_discover_hackathons(max_pages=2)
-    step2_scrape_galleries(limit=6)
+    step2_scrape_galleries(limit=6, max_pages=30)
     step3_scrape_project_details(batch_size=80)
     print("\nExecution complete. Database updated.")
