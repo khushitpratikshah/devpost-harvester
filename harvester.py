@@ -46,8 +46,9 @@ def env_float(name, default):
     return float(os.environ.get(name, default))
 
 
-DIRECTORY_PAGES = env_int("DIRECTORY_PAGES", 2)
-HACKATHON_LIMIT = env_int("HACKATHON_LIMIT", 25)       # new galleries per run
+DIRECTORY_PAGES = env_int("DIRECTORY_PAGES", 2)       # newest pages, re-read every run
+BACKFILL_PAGES = env_int("BACKFILL_PAGES", 10)        # older pages per run, resumes from saved cursor
+HACKATHON_LIMIT = env_int("HACKATHON_LIMIT", 60)       # new galleries per run
 RECHECK_LIMIT = env_int("RECHECK_LIMIT", 10)           # pending galleries re-checked per run
 RECHECK_DAYS = env_float("RECHECK_DAYS", 3)
 MAX_GALLERY_PAGES = env_int("MAX_GALLERY_PAGES", 30)
@@ -149,6 +150,19 @@ def fetch(url, retries=2):
 
 # -------------------------------------------------------------------- db ----
 
+def get_state(key, default=None):
+    rows = client.execute("SELECT value FROM harvester_state WHERE key = ?", [key]).rows
+    return rows[0][0] if rows else default
+
+
+def set_state(key, value):
+    client.execute(
+        "INSERT INTO harvester_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key, str(value)],
+    )
+
+
 def run_batch(stmts):
     for i in range(0, len(stmts), DB_CHUNK):
         client.batch(stmts[i:i + DB_CHUNK])
@@ -189,6 +203,7 @@ def setup_database():
         "CREATE INDEX IF NOT EXISTS idx_project_scraped ON projects(scraped_details)",
         "CREATE INDEX IF NOT EXISTS idx_is_winner ON projects(is_winner)",
         "CREATE INDEX IF NOT EXISTS idx_project_pending ON projects(is_winner, scraped_details)",
+        "CREATE TABLE IF NOT EXISTS harvester_state (key TEXT PRIMARY KEY, value TEXT)",
     ])
     # Additive column for re-checking "pending winners" hackathons. Safe on existing data.
     cols = {r[1] for r in client.execute("PRAGMA table_info(hackathons)").rows}
@@ -214,36 +229,70 @@ def is_winner_card(card):
 
 # --------------------------------------------------------------- phase 1 ----
 
-def step1_discover_hackathons(max_pages):
+def index_directory_page(page):
+    """Returns number of hackathons on the page, 0 if empty, None on error."""
+    url = f"https://devpost.com/api/hackathons?challenge_type[]=all&status[]=ended&page={page}"
+    try:
+        res = fetch(url)
+        hackathons = res.json().get("hackathons", []) if res.status_code == 200 else []
+    except Exception as e:
+        log(f"  directory page {page} failed: {e}")
+        return None
+    if not hackathons:
+        return 0
+
+    stmts = []
+    for h in hackathons:
+        h_url = h.get("url") or ""
+        if not h_url:
+            continue
+        slug = h_url.split("//")[-1].split(".")[0]
+        themes = ",".join(t.get("name") or "" for t in h.get("themes") or [])
+        stmts.append((
+            "INSERT OR IGNORE INTO hackathons (slug, title, url, themes, prize_amount, status) "
+            "VALUES (?, ?, ?, ?, ?, 'ended')",
+            [slug, h.get("title"), h_url, themes, strip_tags(h.get("prize_amount", "$0"))],
+        ))
+    run_batch(stmts)
+    return len(hackathons)
+
+
+def step1_discover_hackathons():
     log("Phase 1: hackathon directory")
-    added = 0
-    for page in range(1, max_pages + 1):
-        url = f"https://devpost.com/api/hackathons?challenge_type[]=all&status[]=ended&page={page}"
-        try:
-            res = fetch(url)
-            hackathons = res.json().get("hackathons", []) if res.status_code == 200 else []
-        except Exception as e:
-            log(f"  directory page {page} failed: {e}")
-            break
-        if not hackathons:
+    before = client.execute("SELECT COUNT(*) FROM hackathons").rows[0][0]
+
+    # Newest ended hackathons: always re-read so nothing new is missed.
+    for page in range(1, DIRECTORY_PAGES + 1):
+        if not index_directory_page(page):
             break
 
-        stmts = []
-        for h in hackathons:
-            h_url = h.get("url") or ""
-            if not h_url:
-                continue
-            slug = h_url.split("//")[-1].split(".")[0]
-            themes = ",".join(t.get("name") or "" for t in h.get("themes") or [])
-            stmts.append((
-                "INSERT OR IGNORE INTO hackathons (slug, title, url, themes, prize_amount, status) "
-                "VALUES (?, ?, ?, ?, ?, 'ended')",
-                [slug, h.get("title"), h_url, themes, strip_tags(h.get("prize_amount", "$0"))],
-            ))
-        run_batch(stmts)
-        added += len(stmts)
-        log(f"  indexed directory page {page} ({len(stmts)} hackathons)")
-    return added
+    # Backfill: continue into older pages from where the last run stopped.
+    # New hackathons push older ones to higher page numbers, so a lagging cursor
+    # only re-reads a few rows (ignored by INSERT OR IGNORE); it never skips any.
+    cursor = get_state("directory_cursor", str(DIRECTORY_PAGES + 1))
+    if cursor == "done":
+        log("  backfill complete, only checking newest pages")
+    else:
+        page = max(int(cursor), DIRECTORY_PAGES + 1)
+        first = page
+        for _ in range(BACKFILL_PAGES):
+            if blocked.is_set() or time_left() < 120:
+                break
+            n = index_directory_page(page)
+            if n is None:          # error: keep cursor, retry this page next run
+                break
+            if n == 0:             # past the last page
+                page = "done"
+                break
+            page += 1
+        set_state("directory_cursor", page)
+        if page == "done":
+            log(f"  backfill reached the last directory page (started at {first})")
+        else:
+            log(f"  backfill pages {first}..{page - 1}, next run starts at page {page}")
+
+    after = client.execute("SELECT COUNT(*) FROM hackathons").rows[0][0]
+    log(f"  {after - before} new hackathons ({after} total)")
 
 
 # --------------------------------------------------------------- phase 2 ----
@@ -419,7 +468,7 @@ def step3_scrape_project_details():
 
 if __name__ == "__main__":
     setup_database()
-    step1_discover_hackathons(DIRECTORY_PAGES)
+    step1_discover_hackathons()
     if not blocked.is_set() and time_left() > 60:
         step2_scrape_galleries()
     if not blocked.is_set() and time_left() > 30:
