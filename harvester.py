@@ -13,9 +13,8 @@ TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 if not TURSO_URL or not TURSO_TOKEN:
     raise ValueError("Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN environment variables.")
 
-# FIX: Force standard HTTPS to bypass the WebSocket 400 Handshake error
+# Force HTTPS to prevent WebSocket handshake failures
 TURSO_URL = TURSO_URL.replace("libsql://", "https://").replace("wss://", "https://")
-
 client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
 
 USER_AGENTS = [
@@ -33,6 +32,41 @@ def clean_text(text):
     if not text:
         return ""
     return re.sub(r'\n\s*\n', '\n\n', text).strip()
+
+def setup_database():
+    print("--- Verifying Database Schema ---")
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS hackathons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE,
+            title TEXT,
+            url TEXT,
+            themes TEXT,
+            prize_amount TEXT,
+            status TEXT,
+            scraped_gallery INTEGER DEFAULT 0
+        )
+    """)
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hackathon_id INTEGER,
+            slug TEXT UNIQUE,
+            title TEXT,
+            url TEXT,
+            is_winner INTEGER DEFAULT 0,
+            prizes_won TEXT,
+            tagline TEXT,
+            story TEXT,
+            technologies TEXT,
+            scraped_details INTEGER DEFAULT 0,
+            FOREIGN KEY(hackathon_id) REFERENCES hackathons(id)
+        )
+    """)
+    client.execute("CREATE INDEX IF NOT EXISTS idx_hackathon_scraped ON hackathons(scraped_gallery)")
+    client.execute("CREATE INDEX IF NOT EXISTS idx_project_scraped ON projects(scraped_details)")
+    client.execute("CREATE INDEX IF NOT EXISTS idx_is_winner ON projects(is_winner)")
+    print("Database schema is ready.\n")
 
 def step1_discover_hackathons(max_pages=2):
     print("--- Phase 1: Checking Hackathon Directory ---")
@@ -122,7 +156,6 @@ def step3_scrape_project_details(batch_size=80):
     print(f"\n--- Phase 3: Deep Scraping Winners Only (Limit: {batch_size}) ---")
     scraper = get_scraper()
     
-    # Only query for projects that won and are not yet scraped
     rs = client.execute("SELECT id, url, title FROM projects WHERE scraped_details = 0 AND is_winner = 1 LIMIT ?", [batch_size])
     
     if not rs.rows:
@@ -139,7 +172,6 @@ def step3_scrape_project_details(batch_size=80):
                 print(f"Status {res.status_code} hit. Backing off.")
                 break
             
-            # If page is permanently dead, skip it permanently
             if res.status_code == 404:
                 client.execute("UPDATE projects SET scraped_details = -1 WHERE id = ?", [p_id])
                 continue
@@ -169,6 +201,7 @@ def step3_scrape_project_details(batch_size=80):
             time.sleep(2)
 
 if __name__ == "__main__":
+    setup_database()
     step1_discover_hackathons(max_pages=2)
     step2_scrape_galleries(limit=6)
     step3_scrape_project_details(batch_size=80)
