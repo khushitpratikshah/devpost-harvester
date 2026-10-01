@@ -13,6 +13,9 @@ TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 if not TURSO_URL or not TURSO_TOKEN:
     raise ValueError("Missing TURSO_DATABASE_URL or TURSO_AUTH_TOKEN environment variables.")
 
+# FIX: Force standard HTTPS to bypass the WebSocket 400 Handshake error
+TURSO_URL = TURSO_URL.replace("libsql://", "https://").replace("wss://", "https://")
+
 client = libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
 
 USER_AGENTS = [
