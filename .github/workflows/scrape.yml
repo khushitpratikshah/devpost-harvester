@@ -1,0 +1,50 @@
+name: Devpost Harvester
+
+on:
+  schedule:
+    # Off the top of the hour: GitHub delays or drops many ":00" scheduled runs.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      project_batch:
+        description: 'Winner detail pages to scrape this run'
+        default: '300'
+      hackathon_limit:
+        description: 'New hackathon galleries to scan this run'
+        default: '25'
+
+# Never let two runs hit Devpost and the DB at the same time.
+concurrency:
+  group: devpost-harvester
+  cancel-in-progress: false
+
+jobs:
+  run-harvester:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt lxml
+
+      - name: Execute Scraper
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          PROJECT_BATCH: ${{ github.event.inputs.project_batch || '300' }}
+          HACKATHON_LIMIT: ${{ github.event.inputs.hackathon_limit || '25' }}
+          WORKERS: '6'
+          REQS_PER_SEC: '3'
+          RUN_BUDGET_SEC: '900'   # script stops new work at 15 min, job timeout is 20
+        run: python -u harvester.py
