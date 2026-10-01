@@ -55,7 +55,7 @@ PROJECT_BATCH = env_int("PROJECT_BATCH", 300)          # winner detail pages per
 WORKERS = env_int("WORKERS", 6)
 REQS_PER_SEC = env_float("REQS_PER_SEC", 3.0)          # shared across all workers
 RUN_BUDGET_SEC = env_int("RUN_BUDGET_SEC", 15 * 60)    # keep below the job timeout
-KEEP_NON_WINNERS =1 os.environ.get("KEEP_NON_WINNERS", "0") == "1"
+KEEP_NON_WINNERS = os.environ.get("KEEP_NON_WINNERS", "0") == "1"
 DB_CHUNK = 50
 
 START = time.monotonic()
